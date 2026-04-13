@@ -1,20 +1,20 @@
-import os, time, sqlite3
+import os, time, sqlite3, re
 from flask import Flask
 from threading import Thread
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import *
 
 TOKEN = os.getenv("TOKEN")
 
 # ================= WEB =================
-app_web = Flask(__name__)
+web_app = Flask(__name__)
 
-@app_web.route('/')
+@web_app.route('/')
 def home():
-    return "Running"
+    return "Bot running 😏"
 
 def run_web():
-    app_web.run(host="0.0.0.0", port=10000)
+    web_app.run(host="0.0.0.0", port=10000)
 
 Thread(target=run_web).start()
 
@@ -75,19 +75,33 @@ def save(uid,u):
     ))
     conn.commit()
 
+# ================= EMOJI DETECTION =================
+def contains_emoji(text):
+    return bool(re.search(r'[\U00010000-\U0010ffff]', text))
+
+LAUGH = ["😂","🤣"]
+SMILE = ["🙂","🙃"]
+
 # ================= DAILY RESET =================
 def check_day(u):
     today = int(time.time()//86400)
 
     if u["last_day"] != today:
+        # streak days
         if u["last_day"] == today-1:
             u["streak_days"] += 1
         else:
             u["streak_days"] = 1
 
+        # reset missions
         u["daily_msg"] = 0
         u["daily_voice"] = 0
         u["daily_laugh"] = 0
+
+        # auto daily bonus
+        u["money"] += 20
+        u["xp"] += 25
+
         u["last_day"] = today
 
 # ================= MULTIPLIER =================
@@ -102,32 +116,39 @@ def mult(u):
 async def msg(update:Update,ctx):
     u=get_user(update.effective_user.id)
     check_day(u)
-    text=update.message.text.lower()
-    m=mult(u)
-    now=time.time()
 
-    # base
+    text = update.message.text or ""
+    now=time.time()
+    m=mult(u)
+
+    # base earning
     u["money"]+=int(1*m)
     u["xp"]+=int(2*m)
 
-    # emoji
-    if any(e in text for e in "😂😏😍🔥❤️"):
+    # ANY emoji
+    if contains_emoji(text):
         u["money"]+=1
         u["xp"]+=1
 
-    # laugh
-    if ("😂" in text or "haha" in text) and u["daily_laugh"]==0:
-        u["daily_laugh"]=1
-        u["money"]+=40
-        u["xp"]+=50
+    # smile reward
+    if any(e in text for e in SMILE):
+        u["money"]+=10
+        u["xp"]+=15
 
-    # daily msg
+    # laugh reward (once/day)
+    if any(e in text for e in LAUGH) or "haha" in text.lower():
+        if u["daily_laugh"]==0:
+            u["daily_laugh"]=1
+            u["money"]+=40
+            u["xp"]+=50
+
+    # daily messages
     u["daily_msg"]+=1
     if u["daily_msg"]==20:
         u["money"]+=30
         u["xp"]+=40
 
-    # streak 5 msgs
+    # 5 msg streak
     if now-u["last_msg"]<60:
         u["streak"]+=1
         if u["streak"]==5:
@@ -143,6 +164,7 @@ async def msg(update:Update,ctx):
 async def voice(update,ctx):
     u=get_user(update.effective_user.id)
     check_day(u)
+
     m=mult(u)
 
     u["money"]+=int(5*m)
@@ -169,33 +191,43 @@ async def video(update,ctx):
     u["xp"]+=60
     save(update.effective_user.id,u)
 
-# ================= DAILY BONUS =================
-async def daily(update,ctx):
-    u=get_user(update.effective_user.id)
-    now=time.time()
+# ================= UI =================
+def menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Balance",callback_data="bal")],
+        [InlineKeyboardButton("🎯 Missions",callback_data="missions")]
+    ])
 
-    if now-u["daily"]>86400:
-        u["money"]+=20
-        u["xp"]+=25
-        u["daily"]=now
-        save(update.effective_user.id,u)
-        await update.message.reply_text("🎁 Daily claimed")
-    else:
-        await update.message.reply_text("❌ Already claimed")
+async def start(update,ctx):
+    await update.message.reply_text("🎮 Game Started 😏",reply_markup=menu())
 
-# ================= BAL =================
-async def bal(update,ctx):
-    u=get_user(update.effective_user.id)
-    await update.message.reply_text(
-        f"💰 {u['money']} | ⭐ {u['xp']}\n🔥 Days: {u['streak_days']}\n"
-        f"Msgs:{u['daily_msg']}/20 Voice:{u['daily_voice']}/2 Laugh:{u['daily_laugh']}"
-    )
+async def button(update,ctx):
+    q=update.callback_query
+    await q.answer()
+    u=get_user(q.from_user.id)
+
+    if q.data=="bal":
+        await q.edit_message_text(
+            f"💰 {u['money']} | ⭐ {u['xp']}\n🔥 Days: {u['streak_days']}",
+            reply_markup=menu()
+        )
+
+    elif q.data=="missions":
+        await q.edit_message_text(
+            f"""🎯 Missions
+
+Msgs: {u['daily_msg']}/20
+Voice: {u['daily_voice']}/2
+Laugh: {'✅' if u['daily_laugh'] else '❌'}
+""",
+            reply_markup=menu()
+        )
 
 # ================= APP =================
 app=ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("bal",bal))
-app.add_handler(CommandHandler("daily",daily))
+app.add_handler(CommandHandler("start",start))
+app.add_handler(CallbackQueryHandler(button))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,msg))
 app.add_handler(MessageHandler(filters.VOICE,voice))
