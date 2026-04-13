@@ -366,7 +366,7 @@ async def edit(update, ctx):
             return
 
         save(uid, u)
-        await update.message.reply_text(f"✅ Updated {name}")
+        await update.message.reply_text(f"✅ Updated SUCCESFULLY {name}")
 
     except:
         await update.message.reply_text(
