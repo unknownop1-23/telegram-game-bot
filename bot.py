@@ -1,11 +1,29 @@
 import os, time, random, sqlite3
-from telegram import Update
+from flask import Flask
+from threading import Thread
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import *
 
 TOKEN = os.getenv("TOKEN")
 
 # =========================
-# DATABASE SETUP
+# WEB SERVER (FIX TIMEOUT)
+# =========================
+
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot running 😏"
+
+def run_web():
+    web_app.run(host="0.0.0.0", port=10000)
+
+Thread(target=run_web).start()
+
+# =========================
+# DATABASE
 # =========================
 
 conn = sqlite3.connect("game.db", check_same_thread=False)
@@ -19,15 +37,10 @@ CREATE TABLE IF NOT EXISTS users (
     level INTEGER,
     streak INTEGER,
     last_msg REAL,
-    daily REAL,
-    shield REAL
+    daily REAL
 )
 """)
 conn.commit()
-
-# =========================
-# USER SYSTEM
-# =========================
 
 def get_user(uid):
     uid = str(uid)
@@ -41,24 +54,20 @@ def get_user(uid):
             "level": row[3],
             "streak": row[4],
             "last_msg": row[5],
-            "daily": row[6],
-            "shield": row[7]
+            "daily": row[6]
         }
 
-    cursor.execute(
-        "INSERT INTO users VALUES (?,0,0,1,0,0,0,0)",
-        (uid,)
-    )
+    cursor.execute("INSERT INTO users VALUES (?,0,0,1,0,0,0)", (uid,))
     conn.commit()
     return get_user(uid)
 
 def save_user(uid, u):
     cursor.execute("""
-    UPDATE users SET money=?, xp=?, level=?, streak=?, last_msg=?, daily=?, shield=?
+    UPDATE users SET money=?, xp=?, level=?, streak=?, last_msg=?, daily=?
     WHERE user_id=?
     """, (
         u["money"], u["xp"], u["level"],
-        u["streak"], u["last_msg"], u["daily"], u["shield"], str(uid)
+        u["streak"], u["last_msg"], u["daily"], str(uid)
     ))
     conn.commit()
 
@@ -79,23 +88,20 @@ def update_level(u):
             u["level"]=lvl
 
 # =========================
-# EARNING SYSTEM
+# EARNING
 # =========================
 
-async def msg(update: Update, ctx):
+async def handle_msg(update: Update, ctx):
     u = get_user(update.effective_user.id)
     now = time.time()
 
-    # base
     u["money"] += 1
     u["xp"] += 2
 
-    # emoji bonus
     if any(e in update.message.text for e in "😂😏😍🔥❤️"):
         u["money"] += 1
         u["xp"] += 2
 
-    # streak
     if now - u["last_msg"] < 60:
         u["streak"] += 1
         if u["streak"] == 5:
@@ -109,21 +115,21 @@ async def msg(update: Update, ctx):
     update_level(u)
     save_user(update.effective_user.id, u)
 
-async def voice(update, ctx):
+async def handle_voice(update, ctx):
     u = get_user(update.effective_user.id)
     u["money"] += 5
     u["xp"] += 10
     update_level(u)
     save_user(update.effective_user.id, u)
 
-async def photo(update, ctx):
+async def handle_photo(update, ctx):
     u = get_user(update.effective_user.id)
     u["money"] += 40
     u["xp"] += 30
     update_level(u)
     save_user(update.effective_user.id, u)
 
-async def video(update, ctx):
+async def handle_video(update, ctx):
     u = get_user(update.effective_user.id)
     u["money"] += 75
     u["xp"] += 60
@@ -131,153 +137,120 @@ async def video(update, ctx):
     save_user(update.effective_user.id, u)
 
 # =========================
+# MAIN MENU UI
+# =========================
+
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("💰 Balance", callback_data="bal")],
+        [InlineKeyboardButton("🛒 Shop", callback_data="shop")],
+        [InlineKeyboardButton("🎁 Daily", callback_data="daily")],
+        [InlineKeyboardButton("🎲 Mystery", callback_data="mystery")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# =========================
 # COMMANDS
 # =========================
 
 async def start(update, ctx):
-    get_user(update.effective_user.id)
-    await update.message.reply_text("🎮 Game Started 😏")
-
-async def bal(update, ctx):
-    u = get_user(update.effective_user.id)
     await update.message.reply_text(
-        f"💰 {u['money']}\n⭐ {u['xp']}\n📈 Level {u['level']}"
+        "🎮 Welcome to Chat Game 😏",
+        reply_markup=main_menu()
     )
 
 # =========================
-# DAILY BONUS
+# BUTTON HANDLER
 # =========================
 
-async def daily(update, ctx):
-    u = get_user(update.effective_user.id)
-    now = time.time()
+async def button(update: Update, ctx):
+    query = update.callback_query
+    await query.answer()
 
-    if now - u["daily"] > 86400:
-        u["money"] += 20
-        u["xp"] += 25
-        u["daily"] = now
-        save_user(update.effective_user.id, u)
-        await update.message.reply_text("🎁 Daily claimed")
-    else:
-        await update.message.reply_text("❌ Already claimed")
+    u = get_user(query.from_user.id)
 
-# =========================
-# SHOP (SIMPLE BASE)
-# =========================
+    if query.data == "bal":
+        await query.edit_message_text(
+            f"💰 {u['money']}\n⭐ {u['xp']}\n📈 L{u['level']}",
+            reply_markup=main_menu()
+        )
 
-SHOP = {
-    "selfie":50,
-    "voice":60,
-    "photo":220,
-    "call":250,
-    "secret":280,
-    "video":350
-}
+    elif query.data == "daily":
+        now = time.time()
+        if now - u["daily"] > 86400:
+            u["money"] += 20
+            u["xp"] += 25
+            u["daily"] = now
+            save_user(query.from_user.id, u)
+            msg = "🎁 Daily claimed"
+        else:
+            msg = "❌ Already claimed"
 
-async def shop(update, ctx):
-    text = "🛒 Shop:\n"
-    for k,v in SHOP.items():
-        text += f"{k} → {v} pts\n"
-    await update.message.reply_text(text)
+        await query.edit_message_text(msg, reply_markup=main_menu())
 
-async def buy(update, ctx):
-    u = get_user(update.effective_user.id)
+    elif query.data == "shop":
+        keyboard = [
+            [InlineKeyboardButton("📸 Selfie (50)", callback_data="buy_selfie")],
+            [InlineKeyboardButton("🎤 Voice (60)", callback_data="buy_voice")],
+            [InlineKeyboardButton("🎥 Video (350)", callback_data="buy_video")],
+            [InlineKeyboardButton("⬅ Back", callback_data="back")]
+        ]
+        await query.edit_message_text(
+            "🛒 Shop:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-    if not ctx.args:
-        return await update.message.reply_text("Use /buy item")
+    elif "buy_" in query.data:
+        item = query.data.split("_")[1]
+        prices = {"selfie":50,"voice":60,"video":350}
 
-    item = ctx.args[0]
+        if u["money"] < prices[item]:
+            msg = "❌ Not enough"
+        else:
+            u["money"] -= prices[item]
+            save_user(query.from_user.id, u)
+            msg = f"✅ Bought {item}"
 
-    if item not in SHOP:
-        return await update.message.reply_text("Invalid item")
+        await query.edit_message_text(msg, reply_markup=main_menu())
 
-    cost = SHOP[item]
+    elif query.data == "mystery":
+        if u["money"] < 200:
+            msg = "Need 200"
+        else:
+            u["money"] -= 200
+            reward = random.choice(["money","xp","lose"])
 
-    if u["money"] < cost:
-        return await update.message.reply_text("Not enough")
+            if reward == "money":
+                amt = random.randint(100,300)
+                u["money"] += amt
+                msg = f"💰 +{amt}"
+            elif reward == "xp":
+                xp = random.randint(100,300)
+                u["xp"] += xp
+                msg = f"⭐ +{xp}"
+            else:
+                u["money"] -= 50
+                msg = "💀 Bad luck"
 
-    u["money"] -= cost
-    save_user(update.effective_user.id, u)
+            save_user(query.from_user.id, u)
 
-    await update.message.reply_text(f"✅ Bought {item}")
+        await query.edit_message_text(msg, reply_markup=main_menu())
 
-# =========================
-# MYSTERY BOX
-# =========================
-
-async def mystery(update, ctx):
-    u = get_user(update.effective_user.id)
-
-    if u["money"] < 200:
-        return await update.message.reply_text("Need 200")
-
-    u["money"] -= 200
-
-    roll = random.randint(1,5)
-
-    if roll == 1:
-        amt = random.randint(100,300)
-        u["money"] += amt
-        msg = f"💰 +{amt}"
-    elif roll == 2:
-        xp = random.randint(100,300)
-        u["xp"] += xp
-        msg = f"⭐ +{xp}"
-    elif roll == 3:
-        u["shield"] = time.time() + 3600
-        msg = "🛡 Shield activated"
-    else:
-        u["money"] -= 50
-        msg = "💀 Bad luck"
-
-    save_user(update.effective_user.id, u)
-    await update.message.reply_text(msg)
+    elif query.data == "back":
+        await query.edit_message_text("Menu:", reply_markup=main_menu())
 
 # =========================
-# STEAL SYSTEM
-# =========================
-
-async def steal(update, ctx):
-    u = get_user(update.effective_user.id)
-
-    if u["money"] < 150:
-        return await update.message.reply_text("Need 150")
-
-    if not ctx.args:
-        return await update.message.reply_text("Use /steal USER_ID")
-
-    target_id = ctx.args[0]
-    t = get_user(target_id)
-
-    if t["shield"] > time.time():
-        return await update.message.reply_text("🛡 Target protected")
-
-    amt = random.choice([300,400,500,600,700,800])
-    t["money"] -= amt
-    u["money"] += amt
-
-    save_user(update.effective_user.id, u)
-    save_user(target_id, t)
-
-    await update.message.reply_text(f"💣 Stole {amt}")
-
-# =========================
-# APP START
+# APP
 # =========================
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("bal", bal))
-app.add_handler(CommandHandler("daily", daily))
-app.add_handler(CommandHandler("shop", shop))
-app.add_handler(CommandHandler("buy", buy))
-app.add_handler(CommandHandler("mystery", mystery))
-app.add_handler(CommandHandler("steal", steal))
+app.add_handler(CallbackQueryHandler(button))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
-app.add_handler(MessageHandler(filters.VOICE, voice))
-app.add_handler(MessageHandler(filters.PHOTO, photo))
-app.add_handler(MessageHandler(filters.VIDEO, video))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+app.add_handler(MessageHandler(filters.VIDEO, handle_video))
 
 app.run_polling()
