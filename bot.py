@@ -1,123 +1,154 @@
-import os
-import random
-import time
+import os, time, random, sqlite3
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-print("BOT STARTING...")
+from telegram.ext import *
 
 TOKEN = os.getenv("TOKEN")
 
-users = {}
+# =========================
+# DATABASE SETUP
+# =========================
 
-# =====================
+conn = sqlite3.connect("game.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    money INTEGER,
+    xp INTEGER,
+    level INTEGER,
+    streak INTEGER,
+    last_msg REAL,
+    daily REAL,
+    shield REAL
+)
+""")
+conn.commit()
+
+# =========================
 # USER SYSTEM
-# =====================
+# =========================
 
 def get_user(uid):
-    if uid not in users:
-        users[uid] = {
-            "money": 0,
-            "xp": 0,
-            "level": 1,
-            "last_msg": 0,
-            "streak": 0,
-            "daily": 0,
-            "boost": {},
-            "shield": False
+    uid = str(uid)
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    row = cursor.fetchone()
+
+    if row:
+        return {
+            "money": row[1],
+            "xp": row[2],
+            "level": row[3],
+            "streak": row[4],
+            "last_msg": row[5],
+            "daily": row[6],
+            "shield": row[7]
         }
-    return users[uid]
+
+    cursor.execute(
+        "INSERT INTO users VALUES (?,0,0,1,0,0,0,0)",
+        (uid,)
+    )
+    conn.commit()
+    return get_user(uid)
+
+def save_user(uid, u):
+    cursor.execute("""
+    UPDATE users SET money=?, xp=?, level=?, streak=?, last_msg=?, daily=?, shield=?
+    WHERE user_id=?
+    """, (
+        u["money"], u["xp"], u["level"],
+        u["streak"], u["last_msg"], u["daily"], u["shield"], str(uid)
+    ))
+    conn.commit()
+
+# =========================
+# LEVEL SYSTEM
+# =========================
 
 LEVELS = [
-    (1,0),(2,100),(3,250),(4,450),(5,700),
-    (6,1000),(7,1400),(8,1900),(9,2500),(10,3200),
-    (11,4000),(12,5000),(13,6200),(14,7500),(15,9000),
-    (16,11000),(17,13500),(18,16500),(19,20000),(20,25000)
+(1,0),(2,100),(3,250),(4,450),(5,700),
+(6,1000),(7,1400),(8,1900),(9,2500),(10,3200),
+(11,4000),(12,5000),(13,6200),(14,7500),(15,9000),
+(16,11000),(17,13500),(18,16500),(19,20000),(20,25000)
 ]
 
 def update_level(u):
-    for lvl, xp in reversed(LEVELS):
-        if u["xp"] >= xp:
-            u["level"] = lvl
-            break
+    for lvl,xp in reversed(LEVELS):
+        if u["xp"]>=xp:
+            u["level"]=lvl
 
-# =====================
-# BOOSTERS
-# =====================
-
-def point_mult(u):
-    if "points" in u["boost"] and u["boost"]["points"] > time.time():
-        return u["boost"]["points_mult"]
-    return 1
-
-def xp_mult(u):
-    if "xp" in u["boost"] and u["boost"]["xp"] > time.time():
-        return u["boost"]["xp_mult"]
-    return 1
-
-# =====================
+# =========================
 # EARNING SYSTEM
-# =====================
+# =========================
 
-async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def msg(update: Update, ctx):
     u = get_user(update.effective_user.id)
-
     now = time.time()
-    m = point_mult(u)
-    x = xp_mult(u)
 
-    u["money"] += int(1 * m)
-    u["xp"] += int(2 * x)
+    # base
+    u["money"] += 1
+    u["xp"] += 2
+
+    # emoji bonus
+    if any(e in update.message.text for e in "😂😏😍🔥❤️"):
+        u["money"] += 1
+        u["xp"] += 2
 
     # streak
     if now - u["last_msg"] < 60:
         u["streak"] += 1
         if u["streak"] == 5:
-            u["money"] += int(10 * m)
-            u["xp"] += int(15 * x)
+            u["money"] += 10
+            u["xp"] += 15
     else:
         u["streak"] = 1
 
     u["last_msg"] = now
-    update_level(u)
 
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    update_level(u)
+    save_user(update.effective_user.id, u)
+
+async def voice(update, ctx):
     u = get_user(update.effective_user.id)
-    u["money"] += int(5 * point_mult(u))
-    u["xp"] += int(10 * xp_mult(u))
+    u["money"] += 5
+    u["xp"] += 10
     update_level(u)
+    save_user(update.effective_user.id, u)
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def photo(update, ctx):
     u = get_user(update.effective_user.id)
-    u["money"] += int(40 * point_mult(u))
-    u["xp"] += int(30 * xp_mult(u))
+    u["money"] += 40
+    u["xp"] += 30
     update_level(u)
+    save_user(update.effective_user.id, u)
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def video(update, ctx):
     u = get_user(update.effective_user.id)
-    u["money"] += int(75 * point_mult(u))
-    u["xp"] += int(60 * xp_mult(u))
+    u["money"] += 75
+    u["xp"] += 60
     update_level(u)
+    save_user(update.effective_user.id, u)
 
-# =====================
+# =========================
 # COMMANDS
-# =====================
+# =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, ctx):
     get_user(update.effective_user.id)
     await update.message.reply_text("🎮 Game Started 😏")
 
-async def bal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def bal(update, ctx):
     u = get_user(update.effective_user.id)
     await update.message.reply_text(
         f"💰 {u['money']}\n⭐ {u['xp']}\n📈 Level {u['level']}"
     )
 
-# =====================
-# DAILY
-# =====================
+# =========================
+# DAILY BONUS
+# =========================
 
-async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def daily(update, ctx):
     u = get_user(update.effective_user.id)
     now = time.time()
 
@@ -125,47 +156,60 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["money"] += 20
         u["xp"] += 25
         u["daily"] = now
+        save_user(update.effective_user.id, u)
         await update.message.reply_text("🎁 Daily claimed")
     else:
         await update.message.reply_text("❌ Already claimed")
 
-# =====================
-# BOOSTERS
-# =====================
+# =========================
+# SHOP (SIMPLE BASE)
+# =========================
 
-async def booster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+SHOP = {
+    "selfie":50,
+    "voice":60,
+    "photo":220,
+    "call":250,
+    "secret":280,
+    "video":350
+}
+
+async def shop(update, ctx):
+    text = "🛒 Shop:\n"
+    for k,v in SHOP.items():
+        text += f"{k} → {v} pts\n"
+    await update.message.reply_text(text)
+
+async def buy(update, ctx):
     u = get_user(update.effective_user.id)
 
-    if not context.args:
-        return await update.message.reply_text("Use /booster 2x or god")
+    if not ctx.args:
+        return await update.message.reply_text("Use /buy item")
 
-    b = context.args[0]
+    item = ctx.args[0]
 
-    if b == "2x":
-        if u["money"] >= 100:
-            u["money"] -= 100
-            u["boost"]["points"] = time.time() + 600
-            u["boost"]["points_mult"] = 2
-            await update.message.reply_text("⚡ 2x points activated")
+    if item not in SHOP:
+        return await update.message.reply_text("Invalid item")
 
-    elif b == "god":
-        if u["money"] >= 500:
-            u["money"] -= 500
-            u["boost"]["points"] = time.time() + 600
-            u["boost"]["xp"] = time.time() + 600
-            u["boost"]["points_mult"] = 3
-            u["boost"]["xp_mult"] = 3
-            await update.message.reply_text("💥 GOD MODE ACTIVATED")
+    cost = SHOP[item]
 
-# =====================
+    if u["money"] < cost:
+        return await update.message.reply_text("Not enough")
+
+    u["money"] -= cost
+    save_user(update.effective_user.id, u)
+
+    await update.message.reply_text(f"✅ Bought {item}")
+
+# =========================
 # MYSTERY BOX
-# =====================
+# =========================
 
-async def mystery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mystery(update, ctx):
     u = get_user(update.effective_user.id)
 
     if u["money"] < 200:
-        return await update.message.reply_text("❌ Need 200 pts")
+        return await update.message.reply_text("Need 200")
 
     u["money"] -= 200
 
@@ -174,62 +218,66 @@ async def mystery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if roll == 1:
         amt = random.randint(100,300)
         u["money"] += amt
-        await update.message.reply_text(f"💰 +{amt}")
-
+        msg = f"💰 +{amt}"
     elif roll == 2:
         xp = random.randint(100,300)
         u["xp"] += xp
-        await update.message.reply_text(f"⭐ +{xp}")
-
+        msg = f"⭐ +{xp}"
     elif roll == 3:
-        u["shield"] = True
-        await update.message.reply_text("🛡 Shield Activated")
-
+        u["shield"] = time.time() + 3600
+        msg = "🛡 Shield activated"
     else:
         u["money"] -= 50
-        await update.message.reply_text("💀 Bad luck")
+        msg = "💀 Bad luck"
 
-# =====================
-# STEAL
-# =====================
+    save_user(update.effective_user.id, u)
+    await update.message.reply_text(msg)
 
-async def steal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# STEAL SYSTEM
+# =========================
+
+async def steal(update, ctx):
     u = get_user(update.effective_user.id)
 
     if u["money"] < 150:
-        return await update.message.reply_text("Need 150 pts")
+        return await update.message.reply_text("Need 150")
 
-    if not context.args:
+    if not ctx.args:
         return await update.message.reply_text("Use /steal USER_ID")
 
-    target_id = int(context.args[0])
+    target_id = ctx.args[0]
     t = get_user(target_id)
 
-    if t["shield"]:
+    if t["shield"] > time.time():
         return await update.message.reply_text("🛡 Target protected")
 
     amt = random.choice([300,400,500,600,700,800])
     t["money"] -= amt
     u["money"] += amt
 
+    save_user(update.effective_user.id, u)
+    save_user(target_id, t)
+
     await update.message.reply_text(f"💣 Stole {amt}")
 
-# =====================
-# APP
-# =====================
+# =========================
+# APP START
+# =========================
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bal", bal))
 app.add_handler(CommandHandler("daily", daily))
-app.add_handler(CommandHandler("booster", booster))
+app.add_handler(CommandHandler("shop", shop))
+app.add_handler(CommandHandler("buy", buy))
 app.add_handler(CommandHandler("mystery", mystery))
 app.add_handler(CommandHandler("steal", steal))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
+app.add_handler(MessageHandler(filters.VOICE, voice))
+app.add_handler(MessageHandler(filters.PHOTO, photo))
+app.add_handler(MessageHandler(filters.VIDEO, video))
 
 app.run_polling()
