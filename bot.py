@@ -5,7 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import *
 
 TOKEN = os.getenv("TOKEN")
-OWNER_ID = 8406272118  # replace with your telegram id
+OWNER_ID = 8406272118
 
 # ================= WEB =================
 web_app = Flask(__name__)
@@ -26,7 +26,6 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
 user_id TEXT PRIMARY KEY,
-username TEXT,
 name TEXT,
 money INTEGER,
 xp INTEGER,
@@ -42,61 +41,49 @@ last_day INTEGER
 """)
 conn.commit()
 
-def get_user(uid, user=None):
+# ================= STATES =================
+remove_state = {}
+name_state = {}
+
+# ================= USER =================
+def get_user(uid):
     uid = str(uid)
-
-    username = ""
-    name = ""
-
-    if user:
-        username = user.username or ""
-        name = user.first_name or ""
-
     cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     row = cursor.fetchone()
 
     if row:
-        # update username/name
-        cursor.execute(
-            "UPDATE users SET username=?, name=? WHERE user_id=?",
-            (username, name, uid)
-        )
-        conn.commit()
-
         return {
-            "username":row[1],
-            "name":row[2],
-            "money":row[3],"xp":row[4],
-            "last_msg":row[5],"streak":row[6],
-            "daily":row[7],
-            "daily_msg":row[8],
-            "daily_voice":row[9],
-            "daily_laugh":row[10],
-            "streak_days":row[11],
-            "last_day":row[12]
+            "name":row[1],
+            "money":row[2],"xp":row[3],
+            "last_msg":row[4],"streak":row[5],
+            "daily":row[6],
+            "daily_msg":row[7],
+            "daily_voice":row[8],
+            "daily_laugh":row[9],
+            "streak_days":row[10],
+            "last_day":row[11]
         }
 
+    # first time → ask name
+    name_state[uid] = True
     cursor.execute(
-        "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (uid, username, name, 0,0,0,0,0,0,0,0,1,0)
+        "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (uid,"",0,0,0,0,0,0,0,0,1,0)
     )
     conn.commit()
     return get_user(uid)
 
 def save(uid,u):
     cursor.execute("""
-    UPDATE users SET money=?,xp=?,last_msg=?,streak=?,daily=?,
+    UPDATE users SET name=?,money=?,xp=?,last_msg=?,streak=?,daily=?,
     daily_msg=?,daily_voice=?,daily_laugh=?,streak_days=?,last_day=?
     WHERE user_id=?
     """,(
-        u["money"],u["xp"],u["last_msg"],u["streak"],u["daily"],
+        u["name"],u["money"],u["xp"],u["last_msg"],u["streak"],u["daily"],
         u["daily_msg"],u["daily_voice"],u["daily_laugh"],
         u["streak_days"],u["last_day"],str(uid)
     ))
     conn.commit()
-
-# ================= REMOVE STATE =================
-remove_state = {}
 
 # ================= EMOJI =================
 def contains_emoji(text):
@@ -134,7 +121,16 @@ def mult(u):
 
 # ================= MESSAGE =================
 async def msg(update:Update,ctx):
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)
+
+    # NAME SETUP
+    if uid in name_state:
+        u = get_user(uid)
+        u["name"] = update.message.text
+        save(uid,u)
+        del name_state[uid]
+        await update.message.reply_text(f"✅ Name set as {u['name']}")
+        return
 
     # REMOVE FLOW
     if uid in remove_state:
@@ -167,7 +163,7 @@ async def msg(update:Update,ctx):
             del remove_state[uid]
             return
 
-    u=get_user(uid, update.effective_user)
+    u=get_user(uid)
     check_day(u)
 
     text = update.message.text or ""
@@ -209,7 +205,7 @@ async def msg(update:Update,ctx):
 
 # ================= VOICE =================
 async def voice(update,ctx):
-    u=get_user(update.effective_user.id, update.effective_user)
+    u=get_user(update.effective_user.id)
     check_day(u)
 
     m=mult(u)
@@ -226,14 +222,14 @@ async def voice(update,ctx):
 
 # ================= PHOTO =================
 async def photo(update,ctx):
-    u=get_user(update.effective_user.id, update.effective_user)
+    u=get_user(update.effective_user.id)
     u["money"]+=25
     u["xp"]+=20
     save(update.effective_user.id,u)
 
 # ================= VIDEO =================
 async def video(update,ctx):
-    u=get_user(update.effective_user.id, update.effective_user)
+    u=get_user(update.effective_user.id)
     u["money"]+=55
     u["xp"]+=40
     save(update.effective_user.id,u)
@@ -248,7 +244,11 @@ def menu():
     ])
 
 async def start(update,ctx):
-    await update.message.reply_text("🎮 Game Started 😏",reply_markup=menu())
+    uid = str(update.effective_user.id)
+    if uid in name_state:
+        await update.message.reply_text("Enter your name:")
+    else:
+        await update.message.reply_text("🎮 Game Started 😏",reply_markup=menu())
 
 # ================= BUTTON =================
 async def button(update,ctx):
@@ -286,30 +286,25 @@ Laugh: {'✅' if u['daily_laugh'] else '❌'}
         for r in rows:
             uid = r[0]
             u2 = get_user(uid)
-            name = f"@{u2['username']}" if u2["username"] else u2["name"]
-            keyboard.append([InlineKeyboardButton(f"👤 {name}", callback_data=f"view_{uid}")])
-
-        keyboard.append([InlineKeyboardButton("⬅ Back", callback_data="back")])
+            keyboard.append([InlineKeyboardButton(f"👤 {u2['name']}", callback_data=f"view_{uid}")])
 
         await q.edit_message_text("Select user:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif q.data.startswith("view_"):
         uid = q.data.split("_")[1]
         u2 = get_user(uid)
-        name = f"@{u2['username']}" if u2["username"] else u2["name"]
 
         await q.edit_message_text(
-            f"""👤 {name}
+            f"""👤 {u2['name']}
 
 💰 {u2['money']}
 ⭐ {u2['xp']}
 🔥 Days: {u2['streak_days']}
 """,
-            reply_markup=menu()
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅ Back", callback_data="view_users")]
+            ])
         )
-
-    elif q.data=="back":
-        await q.edit_message_text("Menu:", reply_markup=menu())
 
 # ================= OWNER =================
 async def owner(update, ctx):
@@ -321,8 +316,7 @@ async def owner(update, ctx):
 
     text = "👑 Users:\n\n"
     for r in rows:
-        name = f"@{r[1]}" if r[1] else r[2]
-        text += f"{name}\n💰 {r[3]} | ⭐ {r[4]}\n🔥 {r[11]}\n\n"
+        text += f"{r[1]}\n💰 {r[2]} | ⭐ {r[3]}\n🔥 {r[10]}\n\n"
 
     await update.message.reply_text(text)
 
