@@ -64,7 +64,6 @@ def get_user(uid):
             "last_day":row[11]
         }
 
-    # first time → ask name
     name_state[uid] = True
     cursor.execute(
         "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -72,6 +71,13 @@ def get_user(uid):
     )
     conn.commit()
     return get_user(uid)
+
+def get_user_by_name(name):
+    cursor.execute("SELECT user_id FROM users WHERE name=?", (name,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    return None
 
 def save(uid,u):
     cursor.execute("""
@@ -259,7 +265,11 @@ async def button(update,ctx):
 
     if q.data=="bal":
         await q.edit_message_text(
-            f"💰 {u['money']} | ⭐ {u['xp']}\n🔥 Days: {u['streak_days']}",
+            f"""👤 {u['name']}
+
+💰 {u['money']}
+⭐ {u['xp']}
+🔥 Days: {u['streak_days']}""",
             reply_markup=menu()
         )
 
@@ -286,7 +296,11 @@ Laugh: {'✅' if u['daily_laugh'] else '❌'}
         for r in rows:
             uid = r[0]
             u2 = get_user(uid)
-            keyboard.append([InlineKeyboardButton(f"👤 {u2['name']}", callback_data=f"view_{uid}")])
+            keyboard.append([
+                InlineKeyboardButton(f"👤 {u2['name']}", callback_data=f"view_{uid}")
+            ])
+
+        keyboard.append([InlineKeyboardButton("⬅ Back", callback_data="menu_back")])
 
         await q.edit_message_text("Select user:", reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -305,6 +319,9 @@ Laugh: {'✅' if u['daily_laugh'] else '❌'}
                 [InlineKeyboardButton("⬅ Back", callback_data="view_users")]
             ])
         )
+
+    elif q.data=="menu_back":
+        await q.edit_message_text("Menu:", reply_markup=menu())
 
 # ================= OWNER =================
 async def owner(update, ctx):
@@ -326,9 +343,15 @@ async def edit(update, ctx):
         return
 
     try:
-        uid = ctx.args[0]
+        name = ctx.args[0]
         field = ctx.args[1]
         value = int(ctx.args[2])
+
+        uid = get_user_by_name(name)
+
+        if not uid:
+            await update.message.reply_text("❌ User not found")
+            return
 
         u = get_user(uid)
 
@@ -338,12 +361,17 @@ async def edit(update, ctx):
             u["xp"] = value
         elif field == "streak":
             u["streak_days"] = value
+        else:
+            await update.message.reply_text("❌ Invalid field")
+            return
 
         save(uid, u)
-        await update.message.reply_text("✅ Updated")
+        await update.message.reply_text(f"✅ Updated {name}")
 
     except:
-        await update.message.reply_text("Usage: /edit user_id money 500")
+        await update.message.reply_text(
+            "Usage:\n/edit name money 500\n/edit name xp 200"
+        )
 
 # ================= APP =================
 app=ApplicationBuilder().token(TOKEN).build()
